@@ -166,6 +166,105 @@ jobs:
         echo "--- CameraSession.kt (added function, last 20 lines) ---"
         tail -20 "$SESSION_FILE"
 
+    - name: Fix PreviewScreen.kt (broken snippet) + FakeCameraSystem.kt (missing override)
+      # 2 naye alag bugs is baar:
+      # 1) PreviewScreen.kt real file nahi hai - kisi ne dual-camera PIP
+      #    feature ka ek AI-generated CODE SNIPPET (bina package, bina
+      #    function wrapper, non-existent composables jaise CameraPreview()/
+      #    SecondaryCameraPreview()/CaptureControls() ke references ke saath)
+      #    seedha poori file ki jagah save kar diya. Ye kabhi valid Kotlin
+      #    tha hi nahi. Neeche isko ek minimal, sahi signature wale
+      #    placeholder composable se replace kar rahe hain jo compile ho.
+      # 2) FakeCameraSystem.kt (testing module) bhi CameraSystem interface
+      #    implement karta hai, aur usme bhi setDualRecordingMode override
+      #    missing tha (jaisa CameraXCameraSystem mein tha, step 6 mein).
+      run: |
+        PREVIEW_FILE=$(find source_code -type f -path "*feature/preview/src/main/java/com/google/jetpackcamera/feature/preview/PreviewScreen.kt" -print -quit)
+        FAKE_FILE=$(find source_code -type f -path "*core/camera/testing/src/main/java/com/google/jetpackcamera/core/camera/testing/FakeCameraSystem.kt" -print -quit)
+
+        if [ -z "$PREVIEW_FILE" ] || [ -z "$FAKE_FILE" ]; then
+          echo "ERROR: PreviewScreen.kt ya FakeCameraSystem.kt nahi mili."
+          exit 1
+        fi
+
+        echo "PreviewScreen.kt: $PREVIEW_FILE"
+        echo "FakeCameraSystem.kt: $FAKE_FILE"
+
+        # 1) PreviewScreen.kt ko poora valid, compiling placeholder se replace karo
+        cat > "$PREVIEW_FILE" << 'EOF'
+        package com.google.jetpackcamera.feature.preview
+
+        import androidx.compose.foundation.layout.Box
+        import androidx.compose.foundation.layout.fillMaxSize
+        import androidx.compose.material3.Text
+        import androidx.compose.runtime.Composable
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import com.google.jetpackcamera.model.CaptureEvent
+
+        // TODO: Ye asli camera preview screen ka placeholder hai. Original
+        //  file ki jagah ek incomplete/broken AI-snippet mil gaya tha jo
+        //  compile hi nahi hota tha (non-existent composables jaise
+        //  CameraPreview()/SecondaryCameraPreview()/CaptureControls() use
+        //  kar raha tha, aur "uiState.dualCameraState" jaisa field bhi
+        //  PreviewViewModel mein exist hi nahi karta). Asli preview UI
+        //  (PreviewDisplay / PreviewLayout, ui:components:capture module
+        //  mein) yahan wire karni padegi taaki camera preview dikhe.
+        @Composable
+        fun PreviewScreen(
+            onNavigateToSettings: () -> Unit,
+            onNavigateToPostCapture: () -> Unit,
+            onRequestWindowColorMode: (Int) -> Unit,
+            onFirstFrameCaptureCompleted: () -> Unit,
+            onCaptureEvent: (CaptureEvent) -> Unit
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Camera preview abhi implement nahi hua (placeholder)")
+            }
+        }
+        EOF
+
+        # 2) FakeCameraSystem.kt mein missing override add karo
+        python3 - "$FAKE_FILE" << 'PYEOF'
+        import sys
+
+        fake_path = sys.argv[1]
+
+        with open(fake_path, "r") as f:
+            src = f.read()
+
+        if "import com.google.jetpackcamera.model.DualCameraRecordingMode" not in src:
+            src = src.replace(
+                "package com.google.jetpackcamera.core.camera.testing",
+                "package com.google.jetpackcamera.core.camera.testing\n\n"
+                "import com.google.jetpackcamera.model.DualCameraRecordingMode",
+                1
+            )
+
+        if "override suspend fun setDualRecordingMode" not in src:
+            override_block = (
+                "\n    override suspend fun setDualRecordingMode(mode: DualCameraRecordingMode) {\n"
+                "        // Test double: state track karne ki zaroorat nahi, no-op.\n"
+                "    }\n"
+            )
+            # Class ke aakhri closing brace se pehle insert karo
+            idx = src.rfind("}")
+            src = src[:idx] + override_block + src[idx:]
+
+        with open(fake_path, "w") as f:
+            f.write(src)
+
+        print("FakeCameraSystem.kt patched.")
+        PYEOF
+
+        echo "--- PreviewScreen.kt (new content) ---"
+        cat "$PREVIEW_FILE"
+        echo "--- FakeCameraSystem.kt (added override) ---"
+        grep -n "setDualRecordingMode\|DualCameraRecordingMode" "$FAKE_FILE"
+
     - name: Build Debug APK
       # --continue 啶啶侧啶� 啶膏ぞ啶班 啶曕啶� 啶忇ぐ啶班啶� 啶曕 啶忇 啶膏ぞ啶� 啶侧啶� 啶啶� 啶啶班た啶傕 啶曕ぐ啷囙啶�
       run: |
