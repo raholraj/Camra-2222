@@ -3,7 +3,7 @@ name: Build Camera App APK
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # मैन्युअली रन करने के लिए
+  workflow_dispatch:
 
 jobs:
   build:
@@ -23,17 +23,16 @@ jobs:
       run: unzip "googel cmara app.zip" -d source_code
 
     - name: Build Debug APK
+      # --continue फ्लैग सारे कोड एरर्स को एक साथ लॉग में प्रिंट करेगा
       run: |
-        # gradlew फाइल का सही पाथ ढूँढना
         PROJECT_ROOT=$(find source_code -name "gradlew" -printf '%h\n' -quit)
         cd "$PROJECT_ROOT"
-        
-        # परमिशन देना और बिल्ड करना
         chmod +x gradlew
-        ./gradlew assembleDebug --stacktrace
+        ./gradlew assembleDebug --stacktrace --continue
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
+      if: always() # बिल्ड फेल होने पर भी आर्टिफैक्ट सेव करने की कोशिश करेगा
       with:
         name: Camera-App-Debug-APK
         path: source_code/**/app/build/outputs/apk/debug/*.apk
