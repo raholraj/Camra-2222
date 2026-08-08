@@ -22,6 +22,54 @@ jobs:
     - name: Unzip Uploaded File
       run: unzip "googel cmara app.zip" -d source_code
 
+    - name: Fix ConcurrentCameraMode.kt (missing enum bug)
+      # ConcurrentCameraMode.kt file mein ConcurrentCameraMode enum ki jagah
+      # galti se DualCameraRecordingMode/DualCameraState likha hua hai.
+      # Isse SettingsDataSource.kt, CameraAppSettings.kt, aur 25+ jagah
+      # "unresolved reference: ConcurrentCameraMode" error aata hai.
+      run: |
+        MODEL_DIR=$(find source_code -type d -path "*core/model/src/main/java/com/google/jetpackcamera/model" -print -quit)
+
+        if [ -z "$MODEL_DIR" ]; then
+          echo "ERROR: core/model package directory nahi mili, path check karo."
+          exit 1
+        fi
+
+        echo "Model dir mila: $MODEL_DIR"
+
+        # 1) ConcurrentCameraMode.kt ko sahi content se overwrite karo
+        cat > "$MODEL_DIR/ConcurrentCameraMode.kt" << 'EOF'
+        package com.google.jetpackcamera.model
+
+        enum class ConcurrentCameraMode {
+            OFF,
+            DUAL
+        }
+        EOF
+
+        # 2) DualCameraRecordingMode/DualCameraState ko naye file mein daalo
+        #    (PreviewScreen.kt aur ConcurrentCameraSession.kt inhe use karte hain)
+        cat > "$MODEL_DIR/DualCameraMode.kt" << 'EOF'
+        package com.google.jetpackcamera.model
+
+        enum class DualCameraRecordingMode {
+            SINGLE,
+            PICTURE_IN_PICTURE,
+            SIDE_BY_SIDE,
+            SEPARATE_FILES
+        }
+
+        data class DualCameraState(
+            val mode: DualCameraRecordingMode = DualCameraRecordingMode.SINGLE,
+            val isSecondaryCameraActive: Boolean = false
+        )
+        EOF
+
+        echo "--- Patched files ---"
+        cat "$MODEL_DIR/ConcurrentCameraMode.kt"
+        echo "---"
+        cat "$MODEL_DIR/DualCameraMode.kt"
+
     - name: Build Debug APK
       # --continue फ्लैग सारे कोड एरर्स को एक साथ लॉग में प्रिंट करेगा
       run: |
