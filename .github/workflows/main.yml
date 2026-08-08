@@ -20,93 +20,63 @@ jobs:
         distribution: 'zulu'
 
     - name: Unzip Uploaded File
-      run: unzip "googel cmara app.zip" -d source_code
+      run: unzip "camera-app.zip" -d source_code
 
-    - name: Fix ConcurrentCameraMode.kt (missing enum bug)
-      # ConcurrentCameraMode.kt file mein ConcurrentCameraMode enum ki jagah
-      # galti se DualCameraRecordingMode/DualCameraState likha hua hai.
+    - name: Show project structure (debug)
       run: |
-        MODEL_DIR=$(find source_code -type d -path "*core/model/src/main/java/com/google/jetpackcamera/model" -print -quit)
+        echo "--- Top level ---"
+        find source_code -maxdepth 3 -type d
+        echo "--- Looking for build.gradle files ---"
+        find source_code -iname "build.gradle*"
 
-        if [ -z "$MODEL_DIR" ]; then
-          echo "ERROR: core/model package directory nahi mili, path check karo."
+    - name: Setup Gradle (handles missing gradlew wrapper)
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Generate Gradle wrapper (project has no gradlew committed)
+      run: |
+        PROJECT_ROOT=$(find source_code -maxdepth 2 -name "settings.gradle.kts" -printf '%h\n' -quit)
+        if [ -z "$PROJECT_ROOT" ]; then
+          PROJECT_ROOT=$(find source_code -maxdepth 2 -name "settings.gradle" -printf '%h\n' -quit)
+        fi
+        if [ -z "$PROJECT_ROOT" ]; then
+          echo "ERROR: settings.gradle(.kts) nahi mili, project root detect nahi hua."
           exit 1
         fi
+        echo "Project root: $PROJECT_ROOT"
+        echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+        cd "$PROJECT_ROOT"
+        gradle wrapper --gradle-version 8.7
+        chmod +x gradlew
+        echo "--- gradlew generated ---"
+        ls -la gradlew gradle/wrapper
 
-        echo "Model dir mila: $MODEL_DIR"
-
-        cat > "$MODEL_DIR/ConcurrentCameraMode.kt" << 'EOF'
-        package com.google.jetpackcamera.model
-
-        enum class ConcurrentCameraMode {
-            OFF,
-            DUAL
-        }
-        EOF
-
-        cat > "$MODEL_DIR/DualCameraMode.kt" << 'EOF'
-        package com.google.jetpackcamera.model
-
-        enum class DualCameraRecordingMode {
-            SINGLE,
-            PICTURE_IN_PICTURE,
-            SIDE_BY_SIDE,
-            SEPARATE_FILES
-        }
-
-        data class DualCameraState(
-            val mode: DualCameraRecordingMode = DualCameraRecordingMode.SINGLE,
-            val isSecondaryCameraActive: Boolean = false
-        )
-        EOF
-
-        echo "--- Patched files ---"
-        cat "$MODEL_DIR/ConcurrentCameraMode.kt"
-        echo "---"
-        cat "$MODEL_DIR/DualCameraMode.kt"
-
-    - name: Fix DualRecordingMode / runConcurrentCameraSession (missing symbols)
-      # 3 bugs mile is baar:
-      # 1) CameraSystem.kt line 50 par type "DualRecordingMode" likha hai
-      #    jabki asli class ka naam "DualCameraRecordingMode" hai (typo).
-      # 2) CameraXCameraSystem class us interface method
-      #    "setDualRecordingMode" ko override hi nahi karti -> "class is
-      #    not abstract and does not implement abstract member" error.
-      # 3) CameraXCameraSystem.kt "runConcurrentCameraSession(...)" call
-      #    karta hai lekin ye function CameraSession.kt mein exist hi
-      #    nahi karta -> "Unresolved reference" error.
+    - name: Build Debug APK
       run: |
-        CAMERA_DIR=$(find source_code -type d -path "*core/camera/src/main/java/com/google/jetpackcamera/core/camera" -print -quit)
+        cd "$PROJECT_ROOT"
+        ./gradlew assembleDebug --stacktrace --continue
 
-        if [ -z "$CAMERA_DIR" ]; then
-          echo "ERROR: core/camera package directory nahi mili."
-          exit 1
-        fi
+    - name: Find APK output (debug)
+      if: always()
+      run: |
+        echo "Saare .apk files dhoondh rahe hain build ke baad:"
+        find source_code -type f -iname "*debug*.apk" -print
 
-        echo "Camera dir mila: $CAMERA_DIR"
+    - name: Upload build logs (for debugging failures)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Gradle-Build-Reports
+        path: |
+          source_code/**/build/reports/**
+        if-no-files-found: ignore
 
-        SYSTEM_FILE="$CAMERA_DIR/CameraSystem.kt"
-        IMPL_FILE="$CAMERA_DIR/CameraXCameraSystem.kt"
-        SESSION_FILE="$CAMERA_DIR/CameraSession.kt"
-
-        # 1) Typo fix: sirf type ka naam badlo, method ka naam mat chhedo
-        sed -i 's/mode: DualRecordingMode/mode: DualCameraRecordingMode/' "$SYSTEM_FILE"
-
-        for f in "$SYSTEM_FILE" "$IMPL_FILE"; do
-          if ! grep -q "import com.google.jetpackcamera.model.DualCameraRecordingMode" "$f"; then
-            sed -i '0,/^import com\.google\.jetpackcamera\.model\./s//import com.google.jetpackcamera.model.DualCameraRecordingMode\n&/' "$f"
-          fi
-        done
-
-        # 2) missing override + 3) missing function ko Python se reliably patch karo
-        python3 - "$IMPL_FILE" "$SESSION_FILE" << 'PYEOF'
-        import sys
-
-        impl_path, session_path = sys.argv[1], sys.argv[2]
-
-        # --- 2) CameraXCameraSystem mein missing override add karo ---
-        with open(impl_path, "r") as f:
-            impl_src = f.read()
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: Camera-App-Debug-APK
+        path: source_code/**/build/outputs/apk/**/*.apk
+        if-no-files-found: warn            impl_src = f.read()
 
         if "override suspend fun setDualRecordingMode" not in impl_src:
             override_block = (
