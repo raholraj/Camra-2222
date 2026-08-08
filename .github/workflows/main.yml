@@ -25,8 +25,6 @@ jobs:
     - name: Fix ConcurrentCameraMode.kt (missing enum bug)
       # ConcurrentCameraMode.kt file mein ConcurrentCameraMode enum ki jagah
       # galti se DualCameraRecordingMode/DualCameraState likha hua hai.
-      # Isse SettingsDataSource.kt, CameraAppSettings.kt, aur 25+ jagah
-      # "unresolved reference: ConcurrentCameraMode" error aata hai.
       run: |
         MODEL_DIR=$(find source_code -type d -path "*core/model/src/main/java/com/google/jetpackcamera/model" -print -quit)
 
@@ -37,7 +35,6 @@ jobs:
 
         echo "Model dir mila: $MODEL_DIR"
 
-        # 1) ConcurrentCameraMode.kt ko sahi content se overwrite karo
         cat > "$MODEL_DIR/ConcurrentCameraMode.kt" << 'EOF'
         package com.google.jetpackcamera.model
 
@@ -47,8 +44,6 @@ jobs:
         }
         EOF
 
-        # 2) DualCameraRecordingMode/DualCameraState ko naye file mein daalo
-        #    (PreviewScreen.kt aur ConcurrentCameraSession.kt inhe use karte hain)
         cat > "$MODEL_DIR/DualCameraMode.kt" << 'EOF'
         package com.google.jetpackcamera.model
 
@@ -70,8 +65,109 @@ jobs:
         echo "---"
         cat "$MODEL_DIR/DualCameraMode.kt"
 
+    - name: Fix DualRecordingMode / runConcurrentCameraSession (missing symbols)
+      # 3 bugs mile is baar:
+      # 1) CameraSystem.kt line 50 par type "DualRecordingMode" likha hai
+      #    jabki asli class ka naam "DualCameraRecordingMode" hai (typo).
+      # 2) CameraXCameraSystem class us interface method
+      #    "setDualRecordingMode" ko override hi nahi karti -> "class is
+      #    not abstract and does not implement abstract member" error.
+      # 3) CameraXCameraSystem.kt "runConcurrentCameraSession(...)" call
+      #    karta hai lekin ye function CameraSession.kt mein exist hi
+      #    nahi karta -> "Unresolved reference" error.
+      run: |
+        CAMERA_DIR=$(find source_code -type d -path "*core/camera/src/main/java/com/google/jetpackcamera/core/camera" -print -quit)
+
+        if [ -z "$CAMERA_DIR" ]; then
+          echo "ERROR: core/camera package directory nahi mili."
+          exit 1
+        fi
+
+        echo "Camera dir mila: $CAMERA_DIR"
+
+        SYSTEM_FILE="$CAMERA_DIR/CameraSystem.kt"
+        IMPL_FILE="$CAMERA_DIR/CameraXCameraSystem.kt"
+        SESSION_FILE="$CAMERA_DIR/CameraSession.kt"
+
+        # 1) Typo fix: sirf type ka naam badlo, method ka naam mat chhedo
+        sed -i 's/mode: DualRecordingMode/mode: DualCameraRecordingMode/' "$SYSTEM_FILE"
+
+        for f in "$SYSTEM_FILE" "$IMPL_FILE"; do
+          if ! grep -q "import com.google.jetpackcamera.model.DualCameraRecordingMode" "$f"; then
+            sed -i '0,/^import com\.google\.jetpackcamera\.model\./s//import com.google.jetpackcamera.model.DualCameraRecordingMode\n&/' "$f"
+          fi
+        done
+
+        # 2) missing override + 3) missing function ko Python se reliably patch karo
+        python3 - "$IMPL_FILE" "$SESSION_FILE" << 'PYEOF'
+        import sys
+
+        impl_path, session_path = sys.argv[1], sys.argv[2]
+
+        # --- 2) CameraXCameraSystem mein missing override add karo ---
+        with open(impl_path, "r") as f:
+            impl_src = f.read()
+
+        if "override suspend fun setDualRecordingMode" not in impl_src:
+            override_block = (
+                "    override suspend fun setDualRecordingMode(mode: DualCameraRecordingMode) {\n"
+                "        // TODO: Dual-camera recording mode ki asli logic yahan\n"
+                "        //  implement karni hai. Abhi sirf build unblock karne\n"
+                "        //  ke liye stub hai.\n"
+                "        Log.w(TAG, \"setDualRecordingMode: not yet implemented, mode=$mode\")\n"
+                "    }\n\n"
+            )
+            impl_src = impl_src.replace(
+                "    companion object {",
+                override_block + "    companion object {",
+                1
+            )
+            with open(impl_path, "w") as f:
+                f.write(impl_src)
+            print("setDualRecordingMode override added to CameraXCameraSystem.kt")
+        else:
+            print("setDualRecordingMode override already present, skipping.")
+
+        # --- 3) CameraSession.kt mein missing runConcurrentCameraSession add karo ---
+        with open(session_path, "r") as f:
+            session_src = f.read()
+
+        if "fun runConcurrentCameraSession" not in session_src:
+            new_function = (
+                "\n\n"
+                "context(CameraSessionContext)\n"
+                "internal suspend fun runConcurrentCameraSession(\n"
+                "    sessionSettings: PerpetualSessionSettings.ConcurrentCamera,\n"
+                "    cameraConstraints: CameraConstraints?\n"
+                ") = coroutineScope {\n"
+                "    // TODO: Concurrent/dual camera session ki asli binding logic\n"
+                "    //  yahan implement karni hai (ConcurrentCameraSession class\n"
+                "    //  ka bindDualCameras jaisa). Abhi ke liye ye stub sirf\n"
+                "    //  build ko unblock karta hai.\n"
+                "    Log.w(\n"
+                "        \"CameraSession\",\n"
+                "        \"runConcurrentCameraSession: not yet implemented for \" +\n"
+                "            sessionSettings.primaryCameraInfo\n"
+                "    )\n"
+                "    kotlinx.coroutines.awaitCancellation()\n"
+                "}\n"
+            )
+            with open(session_path, "a") as f:
+                f.write(new_function)
+            print("runConcurrentCameraSession stub added to CameraSession.kt")
+        else:
+            print("runConcurrentCameraSession already present, skipping.")
+        PYEOF
+
+        echo "--- CameraSystem.kt (patched line) ---"
+        grep -n "setDualRecordingMode\|DualCameraRecordingMode" "$SYSTEM_FILE"
+        echo "--- CameraXCameraSystem.kt (added override) ---"
+        grep -n "setDualRecordingMode" "$IMPL_FILE"
+        echo "--- CameraSession.kt (added function, last 20 lines) ---"
+        tail -20 "$SESSION_FILE"
+
     - name: Build Debug APK
-      # --continue फ्लैग सारे कोड एरर्स को एक साथ लॉग में प्रिंट करेगा
+      # --continue 啶啶侧啶� 啶膏ぞ啶班 啶曕啶� 啶忇ぐ啶班啶� 啶曕 啶忇 啶膏ぞ啶� 啶侧啶� 啶啶� 啶啶班た啶傕 啶曕ぐ啷囙啶�
       run: |
         PROJECT_ROOT=$(find source_code -name "gradlew" -printf '%h\n' -quit)
         cd "$PROJECT_ROOT"
@@ -80,7 +176,7 @@ jobs:
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
-      if: always() # बिल्ड फेल होने पर भी आर्टिफैक्ट सेव करने की कोशिश करेगा
+      if: always() # 啶た啶侧啶� 啶啶� 啶灌啶ㄠ 啶ぐ 啶 啶嗋ぐ啷嵿啶苦か啷堗啷嵿 啶膏啶� 啶曕ぐ啶ㄠ 啶曕 啶曕啶多た啶� 啶曕ぐ啷囙啶�
       with:
         name: Camera-App-Debug-APK
         path: source_code/**/app/build/outputs/apk/debug/*.apk
