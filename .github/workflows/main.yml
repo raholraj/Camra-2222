@@ -139,7 +139,7 @@ jobs:
                 "internal suspend fun runConcurrentCameraSession(\n"
                 "    sessionSettings: PerpetualSessionSettings.ConcurrentCamera,\n"
                 "    cameraConstraints: CameraConstraints?\n"
-                ") = coroutineScope {\n"
+                "): Unit = coroutineScope {\n"
                 "    // TODO: Concurrent/dual camera session ki asli binding logic\n"
                 "    //  yahan implement karni hai (ConcurrentCameraSession class\n"
                 "    //  ka bindDualCameras jaisa). Abhi ke liye ye stub sirf\n"
