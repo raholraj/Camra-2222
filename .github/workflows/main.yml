@@ -1,3 +1,5 @@
+name: Build Camera App APK
+
 on:
   push:
     branches: [ main ]
@@ -107,6 +109,223 @@ jobs:
                 1
             )
             with open(impl_path, "w") as f:
+                f.write(impl_src)
+            print("setDualRecordingMode override added to CameraXCameraSystem.kt")
+        else:
+            print("setDualRecordingMode override already present, skipping.")
+
+        with open(session_path, "r") as f:
+            session_src = f.read()
+
+        if "fun runConcurrentCameraSession" not in session_src:
+            new_function = (
+                "\n\n"
+                "context(CameraSessionContext)\n"
+                "internal suspend fun runConcurrentCameraSession(\n"
+                "    sessionSettings: PerpetualSessionSettings.ConcurrentCamera,\n"
+                "    cameraConstraints: CameraConstraints?\n"
+                "): Unit = coroutineScope {\n"
+                "    // TODO: Concurrent/dual camera session ki asli binding logic\n"
+                "    //  yahan implement karni hai (ConcurrentCameraSession class\n"
+                "    //  ka bindDualCameras jaisa). Abhi ke liye ye stub sirf\n"
+                "    //  build ko unblock karta hai.\n"
+                "    Log.w(\n"
+                "        \"CameraSession\",\n"
+                "        \"runConcurrentCameraSession: not yet implemented for \" +\n"
+                "            sessionSettings.primaryCameraInfo\n"
+                "    )\n"
+                "    kotlinx.coroutines.awaitCancellation()\n"
+                "}\n"
+            )
+            with open(session_path, "a") as f:
+                f.write(new_function)
+            print("runConcurrentCameraSession stub added to CameraSession.kt")
+        else:
+            print("runConcurrentCameraSession already present, skipping.")
+        PYEOF
+
+        echo "--- CameraSystem.kt (patched line) ---"
+        grep -n "setDualRecordingMode\|DualCameraRecordingMode" "$SYSTEM_FILE"
+        echo "--- CameraXCameraSystem.kt (added override) ---"
+        grep -n "setDualRecordingMode" "$IMPL_FILE"
+        echo "--- CameraSession.kt (added function, last 20 lines) ---"
+        tail -20 "$SESSION_FILE"
+
+    - name: Fix PreviewScreen.kt (broken snippet) + FakeCameraSystem.kt (missing override)
+      run: |
+        PREVIEW_FILE=$(find source_code -type f -path "*feature/preview/src/main/java/com/google/jetpackcamera/feature/preview/PreviewScreen.kt" -print -quit)
+        FAKE_FILE=$(find source_code -type f -path "*core/camera/testing/src/main/java/com/google/jetpackcamera/core/camera/testing/FakeCameraSystem.kt" -print -quit)
+
+        if [ -z "$PREVIEW_FILE" ] || [ -z "$FAKE_FILE" ]; then
+          echo "ERROR: PreviewScreen.kt ya FakeCameraSystem.kt nahi mili."
+          exit 1
+        fi
+
+        echo "PreviewScreen.kt: $PREVIEW_FILE"
+        echo "FakeCameraSystem.kt: $FAKE_FILE"
+
+        cat > "$PREVIEW_FILE" << 'EOF'
+        package com.google.jetpackcamera.feature.preview
+
+        import androidx.compose.foundation.layout.Box
+        import androidx.compose.foundation.layout.fillMaxSize
+        import androidx.compose.foundation.layout.padding
+        import androidx.compose.material.icons.Icons
+        import androidx.compose.material.icons.filled.Lens
+        import androidx.compose.material3.FloatingActionButton
+        import androidx.compose.material3.Icon
+        import androidx.compose.material3.MaterialTheme
+        import androidx.compose.runtime.Composable
+        import androidx.compose.runtime.DisposableEffect
+        import androidx.compose.runtime.LaunchedEffect
+        import androidx.compose.runtime.collectAsState
+        import androidx.compose.runtime.getValue
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.platform.LocalContext
+        import androidx.compose.ui.unit.dp
+        import androidx.hilt.navigation.compose.hiltViewModel
+        import com.google.jetpackcamera.model.CameraZoomRatio
+        import com.google.jetpackcamera.model.CaptureEvent
+        import com.google.jetpackcamera.model.ZoomStrategy
+        import com.google.jetpackcamera.ui.components.capture.PreviewDisplay
+        import com.google.jetpackcamera.ui.uistate.capture.AspectRatioUiState
+        import com.google.jetpackcamera.ui.uistate.capture.FocusMeteringUiState
+        import com.google.jetpackcamera.ui.uistate.capture.compound.CaptureUiState
+        import com.google.jetpackcamera.ui.uistate.capture.compound.PreviewDisplayUiState
+
+        // NOTE: Ye real wiring hai (placeholder nahi). Quick settings panel,
+        //  zoom buttons, flip-camera, dual-camera PIP overlay jaise advanced
+        //  UI elements abhi is file mein wire nahi kiye gaye hain -- sirf
+        //  core viewfinder + shutter button. In sab ko baad mein
+        //  CaptureScreenComponents.kt ke existing composables (QuickSettings,
+        //  ZoomControl, FlipLensButton, etc.) use karke add kiya ja sakta hai.
+        @Composable
+        fun PreviewScreen(
+            onNavigateToSettings: () -> Unit,
+            onNavigateToPostCapture: () -> Unit,
+            onRequestWindowColorMode: (Int) -> Unit,
+            onFirstFrameCaptureCompleted: () -> Unit,
+            onCaptureEvent: (CaptureEvent) -> Unit,
+            viewModel: PreviewViewModel = hiltViewModel()
+        ) {
+            val context = LocalContext.current
+            val surfaceRequest by viewModel.surfaceRequest.collectAsState()
+            val captureUiState by viewModel.captureUiState.collectAsState()
+
+            DisposableEffect(Unit) {
+                viewModel.cameraController.startCamera()
+                onDispose {
+                    viewModel.cameraController.stopCamera()
+                }
+            }
+
+            LaunchedEffect(Unit) {
+                for (event in viewModel.captureEvents) {
+                    onCaptureEvent(event)
+                }
+            }
+
+            val readyState = captureUiState as? CaptureUiState.Ready
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                PreviewDisplay(
+                    previewDisplayUiState = readyState?.previewDisplayUiState
+                        ?: PreviewDisplayUiState(
+                            aspectRatioUiState = AspectRatioUiState.Unavailable
+                        ),
+                    onTapToFocus = { x, y -> viewModel.cameraController.tapToFocus(x, y) },
+                    onFlipCamera = { /* TODO: flip-lens wiring, not part of CameraController yet */ },
+                    onScaleZoom = { scale ->
+                        viewModel.zoomController.setZoomRatio(
+                            CameraZoomRatio(ZoomStrategy.Scale(scale))
+                        )
+                    },
+                    onRequestWindowColorMode = onRequestWindowColorMode,
+                    surfaceRequest = surfaceRequest,
+                    focusMeteringUiState = readyState?.focusMeteringUiState
+                        ?: FocusMeteringUiState.Unspecified,
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                FloatingActionButton(
+                    onClick = { viewModel.captureController.captureImage(context.contentResolver) },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 32.dp)
+                ) {
+                    Icon(imageVector = Icons.Filled.Lens, contentDescription = "Capture")
+                }
+            }
+        }
+        EOF
+
+        python3 - "$FAKE_FILE" << 'PYEOF'
+        import sys
+
+        fake_path = sys.argv[1]
+
+        with open(fake_path, "r") as f:
+            src = f.read()
+
+        if "import com.google.jetpackcamera.model.DualCameraRecordingMode" not in src:
+            src = src.replace(
+                "package com.google.jetpackcamera.core.camera.testing",
+                "package com.google.jetpackcamera.core.camera.testing\n\n"
+                "import com.google.jetpackcamera.model.DualCameraRecordingMode",
+                1
+            )
+
+        if "override suspend fun setDualRecordingMode" not in src:
+            override_block = (
+                "\n    override suspend fun setDualRecordingMode(mode: DualCameraRecordingMode) {\n"
+                "        // Test double: state track karne ki zaroorat nahi, no-op.\n"
+                "    }\n"
+            )
+            idx = src.rfind("}")
+            src = src[:idx] + override_block + src[idx:]
+
+        with open(fake_path, "w") as f:
+            f.write(src)
+
+        print("FakeCameraSystem.kt patched.")
+        PYEOF
+
+        echo "--- PreviewScreen.kt (new content) ---"
+        cat "$PREVIEW_FILE"
+        echo "--- FakeCameraSystem.kt (added override) ---"
+        grep -n "setDualRecordingMode\|DualCameraRecordingMode" "$FAKE_FILE"
+
+    - name: Build Debug APK
+      run: |
+        PROJECT_ROOT=$(find source_code -name "gradlew" -printf '%h\n' -quit)
+        cd "$PROJECT_ROOT"
+        chmod +x gradlew
+        ./gradlew assembleDebug --stacktrace --continue
+
+    - name: Find APK output (debug)
+      if: always()
+      run: |
+        echo "Saare .apk files dhoondh rahe hain build ke baad:"
+        find source_code -type f -iname "*.apk" -print
+
+    - name: Upload build logs (for debugging failures)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Gradle-Build-Reports
+        path: |
+          source_code/**/build/reports/**
+        if-no-files-found: ignore
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: Camera-App-Debug-APK
+        path: source_code/**/build/outputs/apk/**/*.apk
+        if-no-files-found: warn            with open(impl_path, "w") as f:
                 f.write(impl_src)
             print("setDualRecordingMode override added to CameraXCameraSystem.kt")
         else:
