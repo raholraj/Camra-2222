@@ -19,8 +19,22 @@ jobs:
         java-version: '17'
         distribution: 'zulu'
 
-    - name: Unzip Uploaded File
-      run: unzip "googel_cmara_app.zip" -d source_code
+    - name: Find and Unzip Uploaded File
+      run: |
+        echo "Repo root mein ye files/folders hain:"
+        ls -la
+
+        ZIP_FILE=$(find . -maxdepth 2 -iname "*.zip" -print -quit)
+
+        if [ -z "$ZIP_FILE" ]; then
+          echo "ERROR: Koi .zip file repo mein nahi mili. Zip file commit hui hai ya nahi confirm karo."
+          exit 1
+        fi
+
+        echo "Zip mili: $ZIP_FILE"
+        unzip -o "$ZIP_FILE" -d source_code
+        echo "--- Extracted top-level structure ---"
+        find source_code -maxdepth 3 -type d
 
     - name: Fix ConcurrentCameraMode.kt (missing enum bug)
       run: |
@@ -151,7 +165,7 @@ jobs:
         echo "--- CameraSession.kt (added function, last 20 lines) ---"
         tail -20 "$SESSION_FILE"
 
-    - name: Fix PreviewScreen.kt (broken snippet) + FakeCameraSystem.kt (missing override)
+    - name: Fix PreviewScreen.kt (real camera preview wiring) + FakeCameraSystem.kt (missing override)
       run: |
         PREVIEW_FILE=$(find source_code -type f -path "*feature/preview/src/main/java/com/google/jetpackcamera/feature/preview/PreviewScreen.kt" -print -quit)
         FAKE_FILE=$(find source_code -type f -path "*core/camera/testing/src/main/java/com/google/jetpackcamera/core/camera/testing/FakeCameraSystem.kt" -print -quit)
@@ -308,7 +322,7 @@ jobs:
       if: always()
       run: |
         echo "Saare .apk files dhoondh rahe hain build ke baad:"
-        find source_code -type f -iname "*.apk" -print
+        find source_code -type f -iname "*.apk" -print || true
 
     - name: Upload build logs (for debugging failures)
       if: always()
